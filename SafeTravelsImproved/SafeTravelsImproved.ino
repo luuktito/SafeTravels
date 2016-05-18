@@ -1,10 +1,7 @@
 #include <NewPing.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
-//#include "MPU6050.h" // not necessary if using MotionApps include file
 
-// Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
-// is used in I2Cdev.h
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
     #include "Wire.h"
 #endif
@@ -44,12 +41,14 @@ float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
 
-void beep(unsigned char delayms){
-  analogWrite(9, 100);      // Almost any value can be used except 0 and 255
-                           // experiment to get the best tone
-  delay(delayms);          // wait for a delayms ms
-  analogWrite(9, 0);       // 0 turns it off
-  delay(delayms);          // wait for a delayms ms   
+void beep(unsigned char delayms)
+{
+  analogWrite(9, 100);      
+  delay(delayms); 
+
+  //turn off again         
+  analogWrite(9, 0);       
+  delay(delayms);           
 }  
 
 void pingSonar()
@@ -59,7 +58,7 @@ void pingSonar()
 
   if((centimeterReading < 10) && (centimeterReading != 0))
   {
-     beep(20);
+     beep(50);
   }
   else if((centimeterReading < 50) && (centimeterReading != 0))
   {
