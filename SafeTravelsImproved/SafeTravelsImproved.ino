@@ -2,7 +2,7 @@
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 
-#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINzO_WIRE
     #include "Wire.h"
 #endif
 
@@ -51,7 +51,19 @@ void beep(unsigned char delayms)
   delay(delayms);           
 }  
 
-void pingSonar()
+boolean isAccelerometerPitchAcceptable(int pitch)
+{
+  if(pitch < -30)
+  {
+    return false;
+  }
+  else
+  {
+    return true;
+  }
+}
+
+void checkDistance()
 {
   delay(50);
   int centimeterReading = sonar.ping_cm();
@@ -150,7 +162,12 @@ void setup() {
   
 void loop() 
 {
-  pingSonar();
+  double currentPitch = ypr[1] * 180/M_PI;
+  Serial.println(currentPitch);
+  Serial.print(" currentpitch ");
+  
+  if(isAccelerometerPitchAcceptable(currentPitch))
+    checkDistance();
   
   mpuInterrupt = false;
   mpuIntStatus = mpu.getIntStatus();
