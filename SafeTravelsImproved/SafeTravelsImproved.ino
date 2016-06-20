@@ -1,6 +1,7 @@
 #include <NewPing.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
+#include  "stdlib.h"
 
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINzO_WIRE
     #include "Wire.h"
@@ -15,6 +16,8 @@ MPU6050 mpu;
 #define OUTPUT_READABLE_YAWPITCHROLL
 #define INTERRUPT_PIN 2  // use pin 2 on Arduino Uno & most boards
 #define TRIGGER_PIN  7  // Arduino pin tied to trigger pin on the ultrasonic sensor.
+#define trigPin 7
+#define echoPin 8
 #define ECHO_PIN     8  // Arduino pin tied to echo pin on the ultrasonic sensor.
 #define MAX_DISTANCE 400 // Maximum distance we want to ping for (in centimeters). Maximum sensor distance is rated at 400-500cm.
 
@@ -22,6 +25,11 @@ NewPing sonar = NewPing(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE); //
 
 int PIEZO_PIN = 13;  
 bool blinkState = false;
+int countDistance = 0;
+double lastTenReadings[10];
+double newReadings[10];
+double upperTukeyFence = 0;
+double lowerTukeyFence = 0;
 
 // MPU control/status vars
 bool dmpReady = false;  // set true if DMP init was successful
@@ -39,53 +47,6 @@ VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measure
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
-
-
-void beep(unsigned char delayms)
-{
-  analogWrite(9, 100);      
-  delay(delayms); 
-
-  //turn off again         
-  analogWrite(9, 0);       
-  delay(delayms);           
-}  
-
-boolean isAccelerometerPitchAcceptable(int pitch)
-{
-  if(pitch < -30)
-  {
-    return false;
-  }
-  else
-  {
-    return true;
-  }
-}
-
-void checkDistance()
-{
-  delay(50);
-  int centimeterReading = sonar.ping_cm();
-
-  if((centimeterReading < 10) && (centimeterReading != 0))
-  {
-     beep(50);
-  }
-  else if((centimeterReading < 50) && (centimeterReading != 0))
-  {
-    beep(100);
-  }
-  else if((centimeterReading < 100) && (centimeterReading != 0))
-  {
-    beep(200);
-  }
-  
-  Serial.print("Ping: ");
-  Serial.print(sonar.ping_cm()); // Send ping, get distance in cm and print result (0 = outside set distance range)
-  Serial.println("cm");
-}
-
 
 // ================================================================
 // ===               INTERRUPT DETECTION ROUTINE                ===
@@ -116,14 +77,9 @@ void setup() {
     Serial.begin(9600);
     while (!Serial); // wait for Leonardo enumeration, others continue immediately
 
-    Serial.println(F("Initializing I2C devices..."));
     mpu.initialize();
     pinMode(INTERRUPT_PIN, INPUT);
-    
-    Serial.println(F("Testing device connections..."));
-    Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
-    
-    Serial.println(F("Initializing DMP..."));
+  
     devStatus = mpu.dmpInitialize();
 
     mpu.setXGyroOffset(220);
@@ -133,24 +89,12 @@ void setup() {
 
     if (devStatus == 0) 
     {
-        Serial.println(F("Enabling DMP..."));
         mpu.setDMPEnabled(true);
-
-        Serial.println(F("Enabling interrupt detection (Arduino external interrupt 0)..."));
         attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
         mpuIntStatus = mpu.getIntStatus();
-
-        Serial.println(F("DMP ready! Waiting for first interrupt..."));
         dmpReady = true;
-        
         packetSize = mpu.dmpGetFIFOPacketSize();
     } 
-    else 
-    {
-        Serial.print(F("DMP Initialization failed (code "));
-        Serial.print(devStatus);
-        Serial.println(F(")"));
-    }
 
     pinMode(PIEZO_PIN, OUTPUT);
 }
@@ -162,23 +106,30 @@ void setup() {
   
 void loop() 
 {
-  double currentPitch = ypr[1] * 180/M_PI;
-  Serial.println(currentPitch);
-  Serial.print(" currentpitch ");
+  //double currentPitch = ypr[2] * 180/M_PI;
+  //Serial.println(currentPitch);
+
+  double tempDistance = checkDistance();
   
-  if(isAccelerometerPitchAcceptable(currentPitch))
-    checkDistance();
-  
+  if (tempDistance < 400 && tempDistance > 1) {
+    lastTenReadings[countDistance] = tempDistance;
+    countDistance++;
+  }
+  if (countDistance == 9) {
+    double newSomething = getFilteredDistance();
+    Serial.println(newSomething);
+    countDistance = 0;
+  }
+   
   mpuInterrupt = false;
   mpuIntStatus = mpu.getIntStatus();
 
   fifoCount = mpu.getFIFOCount();
 
-  if ((mpuIntStatus & 0x10) || fifoCount == 1024) 
-  {
+  if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
       mpu.resetFIFO();
-      Serial.println(F("FIFO overflow!"));
   } 
+  
   else if (mpuIntStatus & 0x02) 
   {
       while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
@@ -190,12 +141,95 @@ void loop()
           mpu.dmpGetQuaternion(&q, fifoBuffer);
           mpu.dmpGetGravity(&gravity, &q);
           mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-          Serial.print("ypr\t");
-          Serial.print(ypr[0] * 180/M_PI);
-          Serial.print("\t");
-          Serial.print(ypr[1] * 180/M_PI);
-          Serial.print("\t");
-          Serial.println(ypr[2] * 180/M_PI);
       #endif
   } 
 }
+
+// ================================================================
+// ===                MEASUREMENT SANITIZATION                  ===
+// ================================================================
+
+int getFilteredDistance()
+{
+  sortLastTenReadings();
+  upperTukeyFence = getUpperTukeyFence();
+  lowerTukeyFence = getLowerTukeyFence();
+  
+  for(int i = 0; i < 10; i++)
+  {
+    newReadings[i] = 0; 
+    if((lastTenReadings[i] <= upperTukeyFence) && (lastTenReadings[i] >= lowerTukeyFence)) {
+      newReadings[i] = lastTenReadings[i];
+    }
+  }
+  return(calculateNewAverage()); 
+}
+
+double calculateNewAverage() 
+{
+  int amountOfReadings = 0;
+  double newAverage = 0;
+
+  for(int i = 0; i < 10; i++)
+  {
+    if (newReadings[i] > 0) {
+      newAverage += newReadings[i];
+      amountOfReadings++;
+    }
+    newReadings[i] = 0;
+  }   
+  return newAverage / amountOfReadings;
+}
+
+//sorting the array. Call this before determining tukey fences!
+void sortLastTenReadings()
+{
+  qsort(lastTenReadings, 10, sizeof (double), compare_doubles);
+}
+
+int compare_doubles (const void *a, const void *b)
+{
+  const double *da = (const double *) a;
+  const double *db = (const double *) b;
+
+  return (*da > *db) - (*da < *db);
+}
+
+double getQ1()
+{
+  return lastTenReadings[2];
+}
+
+double getQ3()
+{
+  return lastTenReadings[7];
+}
+
+//determining upper and lower tukey fences
+double getInterQuartileRange()
+{
+  return getQ3() - getQ1();
+}
+
+double getUpperTukeyFence()
+{
+  return getQ3() + (getInterQuartileRange() * 1.5);
+}
+
+double getLowerTukeyFence()
+{
+  return getQ1() - (getInterQuartileRange() * 1.5);
+}
+
+// ================================================================
+// ===               Ultrasonic Sensor Methods                  ===
+// ================================================================
+
+long checkDistance()
+{
+  delay(20);
+  return(sonar.ping_cm());
+}
+
+
+
